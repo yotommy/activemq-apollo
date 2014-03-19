@@ -544,7 +544,7 @@ public class MqttSession {
 
         if (!route.targets().isEmpty()) {
             Delivery delivery = new Delivery();
-            delivery.message_$eq(new RawMessage(publish.payload()));
+            delivery.message_$eq(new MqttDeliveryMessage(publish.payload(), publish.qos()));
             delivery.persistent_$eq(publish.qos().ordinal() > 0);
             delivery.size_$eq(publish.payload().length);
             delivery.ack_$eq(Scala2Java.toScala(ack));
@@ -611,7 +611,7 @@ public class MqttSession {
                                     complete_close.run();
                                 } else {
                                     Delivery delivery = new Delivery();
-                                    delivery.message_$eq(new RawMessage(connect_message.willMessage()));
+                                    delivery.message_$eq(new MqttDeliveryMessage(connect_message.willMessage()));
                                     delivery.size_$eq(connect_message.willMessage().length);
                                     delivery.persistent_$eq(connect_message.willQos().ordinal() > 0);
                                     if (connect_message.willRetain()) {
@@ -865,12 +865,12 @@ public class MqttSession {
                 // Look up which QoS we need to send this message with..
                 SimpleAddress topic = delivery.sender().head().simple();
 
-                QoS qos = addresses.get(topic);
-                if (qos == null) {
-                    qos = Scala2Java.<QoS>head(wildcards.get(topic.path()));
+                QoS subscribe_qos = addresses.get(topic);
+                if (subscribe_qos == null) {
+                    subscribe_qos = Scala2Java.<QoS>head(wildcards.get(topic.path()));
                 }
 
-                if (qos == null) {
+                if (subscribe_qos == null) {
                     acked(delivery, Consumed$.MODULE$);
                     return Scala2Java.none();
                 } else {
@@ -881,13 +881,13 @@ public class MqttSession {
                     }
 
                     if (delivery.message().codec() == RawMessageCodec$.MODULE$) {
-                        publish.payload(((RawMessage) delivery.message()).payload());
+                        publish.payload(((MqttDeliveryMessage) delivery.message()).payload());
                     } else {
                         if (publish_body) {
                             try {
                                 publish.payload(delivery.message().getBodyAs(Buffer.class));
                             } catch (FilterException e) {
-                                log.error(e, "Internal Server Error: Could not covert message body to a Buffer");
+                                log.error(e, "Internal Server Error: Could not convert message body to a Buffer");
                             }
                         } else {
                             publish.payload(delivery.message().encoded());
@@ -903,8 +903,20 @@ public class MqttSession {
                         }
                     };
 
-                    if (delivery.ack() != null && (qos != QoS.AT_MOST_ONCE)) {
-                        publish.qos(qos);
+                    if (delivery.ack() != null && (subscribe_qos != QoS.AT_MOST_ONCE)) {
+                        // The QoS for the outgoing PUBLISH message is the minimum
+                        // of the QoS of the incoming PUBLISH and that of the
+                        // subscription.
+                        MqttDeliveryMessage mqtt_msg = (MqttDeliveryMessage) delivery.message();
+                        QoS publish_qos = mqtt_msg.qos();
+                        QoS effective_qos;
+                        if (publish_qos.ordinal() < subscribe_qos.ordinal()) {
+                            effective_qos = publish_qos;
+                        } else {
+                            effective_qos = subscribe_qos;
+                        }
+                        publish.qos(effective_qos);
+
                         short id = to_message_id(clean_session ?
                                 get_next_seq_id() : // generate our own seq id.
                                 delivery.seq() // use the durable sub's seq id..

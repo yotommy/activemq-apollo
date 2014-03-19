@@ -259,6 +259,7 @@ class Delivery {
     storeLocator = other.storeLocator
     redeliveries = other.redeliveries
     retain = other.retain
+    ack = other.ack
     this
   }
 
